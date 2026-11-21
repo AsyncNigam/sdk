@@ -207,6 +207,29 @@ testDevAndDeploy(
 );
 
 testDevAndDeploy(
+  "except handler does not catch redirects returned by component route handlers",
+  async ({ page, url }) => {
+    // Navigate to a route where a server component returns a Response.redirect.
+    // The redirect should be followed to the home page ("Hello World") without
+    // invoking the except handler (which would show the "Error Page").
+    await page.goto(`${url}/debug/redirect-component`);
+
+    await page.waitForFunction("document.readyState === 'complete'");
+
+    const getPageContent = () => page.content();
+    await poll(
+      async () => {
+        const content = await getPageContent();
+        expect(content).toContain("Hello World");
+        expect(content).not.toContain("Error Page");
+        return true;
+      },
+      { timeout: 10000 },
+    );
+  },
+);
+
+testDevAndDeploy(
   "client components work on initial load (inc. .client.tsx and inlined functions)",
   async ({ page, url }) => {
     await page.goto(url);

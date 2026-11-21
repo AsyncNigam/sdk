@@ -226,9 +226,7 @@ function flattenRoutes<T extends RequestInfo = RequestInfo>(
     return [
       ...acc,
       route as
-        | RouteMiddleware<T>
-        | RouteDefinition<string, T>
-        | ExceptHandler<T>,
+        RouteMiddleware<T> | RouteDefinition<string, T> | ExceptHandler<T>,
     ];
   }, []);
 }
@@ -415,7 +413,7 @@ export function defineRoutes<T extends RequestInfo = RequestInfo>(
         // NOTE: instanceof fails for cross-realm Responses (e.g. Response.json()
         // in Cloudflare's vite dev mode constructs from a different realm's
         // prototype). Fall back to constructor.name check.
-        if (result instanceof Response || result?.constructor?.name === 'Response') {
+        if (isResponse(result)) {
           return result as Response;
         }
         if (result && React.isValidElement(result)) {
@@ -445,15 +443,17 @@ export function defineRoutes<T extends RequestInfo = RequestInfo>(
             matchPath(normalized.slice(0, -1), requestPath) !== null
           );
         }
-        return (
-          requestPath === normalized || requestPath.startsWith(normalized)
-        );
+        return requestPath === normalized || requestPath.startsWith(normalized);
       }
 
       async function executeExceptHandlers(
         error: unknown,
         startIndex: number,
       ): Promise<Response> {
+        if (isResponse(error)) {
+          return error;
+        }
+
         // Search backwards from startIndex to find the most recent except handler
         for (let i = startIndex; i >= 0; i--) {
           const route = compiledRoutes[i];
@@ -612,8 +612,12 @@ export function defineRoutes<T extends RequestInfo = RequestInfo>(
                     requestInfo,
                   );
 
-                  if (!isClientReference(componentHandler) && !requestInfo.rw.pageRouteResolved) {
+                  if (
+                    !isClientReference(componentHandler) &&
+                    !requestInfo.rw.pageRouteResolved
+                  ) {
                     requestInfo.rw.pageRouteResolved = Promise.withResolvers();
+                    requestInfo.rw.pageRouteResolved.promise.catch(() => {});
                   }
 
                   const response = await renderPage(
@@ -626,9 +630,16 @@ export function defineRoutes<T extends RequestInfo = RequestInfo>(
                   // errors on rw.renderError instead of throwing, to avoid
                   // corrupting React's internal RSC stream state. We check for
                   // it here and throw so except handlers can process it.
+                  // If the captured value is a Response, it was thrown by
+                  // wrapHandlerToThrowResponses to exit React rendering — return
+                  // it directly so except handlers do not treat it as an error.
                   if (requestInfo.rw.renderError) {
                     const error = requestInfo.rw.renderError;
                     requestInfo.rw.renderError = undefined;
+                    if (isResponse(error)) {
+                      requestInfo.rw.pageRouteResolved?.resolve();
+                      return error;
+                    }
                     throw error;
                   }
 
@@ -682,10 +693,7 @@ Route handlers must return one of:
         try {
           await handleAction();
         } catch (error) {
-          return await executeExceptHandlers(
-            error,
-            compiledRoutes.length - 1,
-          );
+          return await executeExceptHandlers(error, compiledRoutes.length - 1);
         }
 
         return new Response("Not Found", { status: 404 });
@@ -993,7 +1001,7 @@ export const wrapHandlerToThrowResponses = <
   const ComponentWrappedToThrowResponses = async (requestInfo: T) => {
     const result = await handler(requestInfo);
 
-    if (result instanceof Response) {
+    if (isResponse(result)) {
       requestInfo.rw.pageRouteResolved?.reject(result);
       throw result;
     }
@@ -1124,4 +1132,13 @@ function isRouteComponent(handler: any) {
 
 export const isClientReference = (value: any) => {
   return Object.prototype.hasOwnProperty.call(value, "$$isClientReference");
+};
+
+export const isResponse = (value: unknown): value is Response => {
+  return (
+    value instanceof Response ||
+    (typeof value === "object" &&
+      value !== null &&
+      (value as any).constructor?.name === "Response")
+  );
 };

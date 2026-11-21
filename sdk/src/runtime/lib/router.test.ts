@@ -776,10 +776,7 @@ describe("defineRoutes - Request Handling Behavior", () => {
       });
 
       // requireAdmin should short-circuit before the action runs
-      expect(executionOrder).toEqual([
-        "globalMiddleware",
-        "requireAdmin",
-      ]);
+      expect(executionOrder).toEqual(["globalMiddleware", "requireAdmin"]);
       expect(response.status).toBe(403);
     });
   });
@@ -1079,7 +1076,11 @@ describe("defineRoutes - Request Handling Behavior", () => {
         requestInfo?: RequestInfo<{ orgId: string }>;
       }) => {
         capturedLayoutProps = props;
-        return React.createElement("div", { className: "app-layout" }, props.children);
+        return React.createElement(
+          "div",
+          { className: "app-layout" },
+          props.children,
+        );
       };
 
       const OrgIndex = () => {
@@ -1087,7 +1088,9 @@ describe("defineRoutes - Request Handling Behavior", () => {
       };
 
       // Schedule needs { orgId, date } — a superset
-      const Schedule = (requestInfo: RequestInfo<{ orgId: string; date: string }>) => {
+      const Schedule = (
+        requestInfo: RequestInfo<{ orgId: string; date: string }>,
+      ) => {
         capturedRouteParams = requestInfo.params;
         return React.createElement(
           "div",
@@ -1099,9 +1102,7 @@ describe("defineRoutes - Request Handling Behavior", () => {
       const routes = prefix("/:orgId", [
         layout(AppLayout, [
           index(OrgIndex),
-          prefix("/schedule", [
-            route("/:date", Schedule),
-          ]),
+          prefix("/schedule", [route("/:date", Schedule)]),
         ]),
       ]);
 
@@ -1511,13 +1512,17 @@ describe("defineRoutes - Request Handling Behavior", () => {
       });
       // Sanity: must match the real workerd behavior
       if (proxy instanceof Response) {
-        throw new Error("Test setup broken: cross-realm response should not pass instanceof");
+        throw new Error(
+          "Test setup broken: cross-realm response should not pass instanceof",
+        );
       }
       // TS narrows proxy to `never` after the instanceof check above (it
       // assumes non-Response means no constructor), but the whole point is
       // that this object IS a Response from a foreign realm.
       if ((proxy as any).constructor?.name !== "Response") {
-        throw new Error("Test setup broken: constructor.name should be 'Response'");
+        throw new Error(
+          "Test setup broken: constructor.name should be 'Response'",
+        );
       }
       return proxy;
     }
@@ -1525,7 +1530,8 @@ describe("defineRoutes - Request Handling Behavior", () => {
     it("should return cross-realm Response.json() from a POST route handler", async () => {
       const router = defineRoutes([
         route("/api/users/", {
-          post: () => crossRealmResponseJson({ created: true }, { status: 201 }),
+          post: () =>
+            crossRealmResponseJson({ created: true }, { status: 201 }),
         }),
       ]);
 
@@ -1589,7 +1595,10 @@ describe("defineRoutes - Request Handling Behavior", () => {
 
       const checkRole = () => {
         executionOrder.push("checkRole");
-        return crossRealmResponseJson({ error: "unauthorized" }, { status: 401 });
+        return crossRealmResponseJson(
+          { error: "unauthorized" },
+          { status: 401 },
+        );
       };
 
       const PageComponent = () => {
@@ -2060,9 +2069,14 @@ describe("defineRoutes - Request Handling Behavior", () => {
         return router;
       };
 
-      const handle = async (router: ReturnType<typeof defineRoutes>, path: string) => {
+      const handle = async (
+        router: ReturnType<typeof defineRoutes>,
+        path: string,
+      ) => {
         const deps = createMockDependencies();
-        deps.mockRequestInfo.request = new Request(`http://localhost:3000${path}`);
+        deps.mockRequestInfo.request = new Request(
+          `http://localhost:3000${path}`,
+        );
         return router.handle({
           request: new Request(`http://localhost:3000${path}`),
           renderPage: deps.mockRenderPage,
@@ -2141,6 +2155,226 @@ describe("defineRoutes - Request Handling Behavior", () => {
 
         const outside = await handle(router, "/about/");
         expect(await outside.text()).toBe("[GLOBAL]");
+      });
+    });
+
+    describe("returned and thrown Responses from page components (#1307)", () => {
+      it("should return the Response directly and not invoke except handlers when a page component returns a Response (e.g. redirect)", async () => {
+        let exceptHandlerCalled = false;
+        const errorHandler = except((_error) => {
+          exceptHandlerCalled = true;
+          return new Response("Error handler ran", { status: 500 });
+        });
+
+        const RedirectComponent = () => {
+          /* jsx */
+          return Response.redirect("https://example.com/new", 302);
+        };
+
+        const router = defineRoutes([
+          errorHandler,
+          route("/old/", RedirectComponent),
+        ]);
+
+        const deps = createMockDependencies();
+        // Simulate renderPage capturing the thrown Response on rw.renderError like worker.tsx does
+        deps.mockRenderPage = async (requestInfo, Page) => {
+          try {
+            await (Page as any)(requestInfo);
+          } catch (error) {
+            if (!requestInfo.rw.renderError) {
+              requestInfo.rw.renderError = error;
+            }
+          }
+          return new Response(null, { status: 500 });
+        };
+
+        const request = new Request("http://localhost:3000/old/");
+        deps.mockRequestInfo.request = request;
+
+        const response = await router.handle({
+          request,
+          renderPage: deps.mockRenderPage,
+          getRequestInfo: deps.getRequestInfo,
+          onError: deps.onError,
+          runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+          rscActionHandler: deps.mockRscActionHandler,
+        });
+
+        expect(exceptHandlerCalled).toBe(false);
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe(
+          "https://example.com/new",
+        );
+      });
+
+      it("should return the Response directly and not invoke except handlers when a page component throws a Response", async () => {
+        let exceptHandlerCalled = false;
+        const errorHandler = except((_error) => {
+          exceptHandlerCalled = true;
+          return new Response("Error handler ran", { status: 500 });
+        });
+
+        const ThrowRedirectComponent = () => {
+          /* jsx */
+          throw Response.redirect("https://example.com/thrown", 307);
+        };
+
+        const router = defineRoutes([
+          errorHandler,
+          route("/thrown-redirect/", ThrowRedirectComponent),
+        ]);
+
+        const deps = createMockDependencies();
+        deps.mockRenderPage = async (requestInfo, Page) => {
+          try {
+            await (Page as any)(requestInfo);
+          } catch (error) {
+            if (!requestInfo.rw.renderError) {
+              requestInfo.rw.renderError = error;
+            }
+          }
+          return new Response(null, { status: 500 });
+        };
+
+        const request = new Request("http://localhost:3000/thrown-redirect/");
+        deps.mockRequestInfo.request = request;
+
+        const response = await router.handle({
+          request,
+          renderPage: deps.mockRenderPage,
+          getRequestInfo: deps.getRequestInfo,
+          onError: deps.onError,
+          runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+          rscActionHandler: deps.mockRscActionHandler,
+        });
+
+        expect(exceptHandlerCalled).toBe(false);
+        expect(response.status).toBe(307);
+        expect(response.headers.get("location")).toBe(
+          "https://example.com/thrown",
+        );
+      });
+
+      it("should still invoke except handlers when a page component throws a real error", async () => {
+        let caughtError: unknown;
+        const errorHandler = except((error) => {
+          caughtError = error;
+          return new Response(`Caught error: ${(error as Error).message}`, {
+            status: 500,
+          });
+        });
+
+        const CrashingComponent = () => {
+          /* jsx */
+          throw new Error("Component rendering failed");
+        };
+
+        const router = defineRoutes([
+          errorHandler,
+          route("/crash/", CrashingComponent),
+        ]);
+
+        const deps = createMockDependencies();
+        deps.mockRenderPage = async (requestInfo, Page) => {
+          try {
+            await (Page as any)(requestInfo);
+          } catch (error) {
+            if (!requestInfo.rw.renderError) {
+              requestInfo.rw.renderError = error;
+            }
+          }
+          return new Response(null, { status: 500 });
+        };
+
+        const request = new Request("http://localhost:3000/crash/");
+        deps.mockRequestInfo.request = request;
+
+        const response = await router.handle({
+          request,
+          renderPage: deps.mockRenderPage,
+          getRequestInfo: deps.getRequestInfo,
+          onError: deps.onError,
+          runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+          rscActionHandler: deps.mockRscActionHandler,
+        });
+
+        expect(response.status).toBe(500);
+        expect(await response.text()).toBe(
+          "Caught error: Component rendering failed",
+        );
+        expect(caughtError).toBeInstanceOf(Error);
+      });
+
+      it("should not invoke except handlers when a function route throws a Response", async () => {
+        let exceptHandlerCalled = false;
+        const errorHandler = except((_error) => {
+          exceptHandlerCalled = true;
+          return new Response("Error handler ran", { status: 500 });
+        });
+
+        const router = defineRoutes([
+          errorHandler,
+          route("/function-throw/", () => {
+            throw Response.redirect("https://example.com/from-func", 302);
+          }),
+        ]);
+
+        const deps = createMockDependencies();
+        const request = new Request("http://localhost:3000/function-throw/");
+        deps.mockRequestInfo.request = request;
+
+        const response = await router.handle({
+          request,
+          renderPage: deps.mockRenderPage,
+          getRequestInfo: deps.getRequestInfo,
+          onError: deps.onError,
+          runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+          rscActionHandler: deps.mockRscActionHandler,
+        });
+
+        expect(exceptHandlerCalled).toBe(false);
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe(
+          "https://example.com/from-func",
+        );
+      });
+
+      it("should not invoke except handlers when a middleware throws a Response", async () => {
+        let exceptHandlerCalled = false;
+        const errorHandler = except((_error) => {
+          exceptHandlerCalled = true;
+          return new Response("Error handler ran", { status: 500 });
+        });
+
+        const redirectMiddleware = () => {
+          throw Response.redirect("https://example.com/from-middleware", 302);
+        };
+
+        const router = defineRoutes([
+          redirectMiddleware,
+          errorHandler,
+          route("/protected/", () => new Response("OK")),
+        ]);
+
+        const deps = createMockDependencies();
+        const request = new Request("http://localhost:3000/protected/");
+        deps.mockRequestInfo.request = request;
+
+        const response = await router.handle({
+          request,
+          renderPage: deps.mockRenderPage,
+          getRequestInfo: deps.getRequestInfo,
+          onError: deps.onError,
+          runWithRequestInfoOverrides: deps.mockRunWithRequestInfoOverrides,
+          rscActionHandler: deps.mockRscActionHandler,
+        });
+
+        expect(exceptHandlerCalled).toBe(false);
+        expect(response.status).toBe(302);
+        expect(response.headers.get("location")).toBe(
+          "https://example.com/from-middleware",
+        );
       });
     });
   });
